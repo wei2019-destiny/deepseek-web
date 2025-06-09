@@ -1,66 +1,56 @@
-import React, { useState, useEffect, useRef } from 'react';
-
-const escapeHtml = (text) => {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML; 
-};
-
-const parseMessageText = (text) => {
-  // Replace ``` with <pre> or </pre>
-  let formattedText = text.split(/```/).map((part, index) => {
-    if (index % 2 === 1) {
-      return `<pre>${escapeHtml(part)}</pre>`;
-    }
-    return escapeHtml(part);
-  }).join('');
-
-  // Replace `text` with <code>escaped text</code>
-  formattedText = formattedText.replace(/`([^`]+)`/g, (_, code) => `<code>${escapeHtml(code)}</code>`);
-
-  // Replace #### with <h4>
-  formattedText = formattedText.replace(/#### (.*?)(\n|$)/g, "<h4>$1</h4>");
-  
-  // Replace ### with <h3>
-  formattedText = formattedText.replace(/### (.*?)(\n|$)/g, "<h3>$1</h3>");
-  
-  // Replace ## with <h2>
-  formattedText = formattedText.replace(/## (.*?)(\n|$)/g, "<h2>$1</h2>");
-  
-  // Replace **text** with <strong>text</strong>
-  formattedText = formattedText.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-
-  return formattedText;
-};
-
-import "./App.css";
+/*
+ * @Author: wei-destiny 1286780926@qq.com
+ * @Date: 2025-06-02 19:32:45
+ * @LastEditors: wei-destiny 1286780926@qq.com
+ * @LastEditTime: 2025-06-09 17:59:51
+ * @FilePath: \deepseek-web\ui\src\App.jsx
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
+import React, { useState, useRef, useEffect } from 'react';
+import './App.css';
+import { ChatMessages, MessageInput, ClearButton, FileUpload } from './components';
 
 function App() {
   const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
-  const [pendingThink, setPendingThink] = useState("");
+  const [pendingThink, setPendingThink] = useState('');
   const [uploadedFile, setUploadedFile] = useState(null);
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [uploadStatus, setUploadStatus] = useState('');
   const [collapsedThinks, setCollapsedThinks] = useState({});
-  const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  const handleFileUpload = (event) => {
-    const file = event.target.files[0];
-    if (file && (file.type === "text/plain" || file.type === "application/json")) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setUploadedFile({
-          name: file.name,
-          content: e.target.result
-        });
+  const handleFileUpload = async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    setUploadedFile(file);
+
+    try {
+      const response = await fetch('http://localhost:3000/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      // Add system message about successful upload
+      const systemMessage = {
+        role: 'assistant',
+        content: `File uploaded successfully: ${file.name}`,
       };
-      reader.readAsText(file);
-    } else {
-      alert("请上传txt文件");
+      setMessages(prevMessages => [...prevMessages, systemMessage]);
+    } catch (error) {
+      console.error('Error:', error);
+      const errorMessage = {
+        role: 'assistant',
+        content: `Error: Failed to upload file ${file.name}`,
+      };
+      setMessages(prevMessages => [...prevMessages, errorMessage]);
+      setUploadedFile(null);
     }
   };
 
@@ -104,78 +94,86 @@ function App() {
     }
   };
 
-  const sendMessage = async () => {
-    if (!input.trim()) return;
+  const handleSendMessage = async (content) => {
+    if (!content.trim()) return;
 
-    setMessages((prevMessages) => {
-      const newMessages = [...prevMessages, { content: input, role: "user" }];
-      return newMessages;
-    });
+    // Add user message
+    const userMessage = { role: 'user', content };
+    setMessages(prevMessages => [...prevMessages, userMessage]);
 
-    setInput("");
+    // Set loading state
     setLoading(true);
 
     try {
-      const response = await fetch("http://localhost:3000/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          message: input,
-          fileContent: uploadedFile ? uploadedFile.content : null,
-          fileName: uploadedFile ? uploadedFile.name : null
-        }),
+      const response = await fetch('http://localhost:3000/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message: content }),
       });
 
-      if (!response.body) throw new Error("No response body");
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
       const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let botMessage = "";
-      let currentThink = "";
-      let isInThinkBlock = false;
-
-      setMessages((prevMessages) => [...prevMessages, { content: "", role: "assistant" }]);
+      let accumulatedThink = '';
+      let accumulatedContent = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
-        const newContent = decoder.decode(value, { stream: true });
         
-        // 检查思考块的开始和结束
-        if (newContent.includes("<think>")) {
-          isInThinkBlock = true;
-          setIsThinking(true);
-        }
+        // Convert the array buffer to text
+        const text = new TextDecoder().decode(value);
+        const lines = text.split('\n');
         
-        if (isInThinkBlock) {
-          currentThink += newContent;
-          if (newContent.includes("</think>")) {
-            isInThinkBlock = false;
-            setIsThinking(false);
-            botMessage += currentThink;
-            setPendingThink("");
-          } else {
-            setPendingThink(currentThink);
-            continue;
+        for (const line of lines) {
+          if (!line) continue;
+          
+          try {
+            const data = JSON.parse(line);
+            
+            if (data.type === 'think') {
+              setIsThinking(true);
+              accumulatedThink += data.content;
+              setPendingThink(accumulatedThink);
+            } else if (data.type === 'content') {
+              setIsThinking(false);
+              setPendingThink('');
+              accumulatedContent += data.content;
+            }
+          } catch (e) {
+            console.error('Error parsing JSON:', e);
           }
-        } else {
-          botMessage += newContent;
         }
+      }
 
-        setMessages((prevMessages) => {
-          const updatedMessages = [...prevMessages];
-          updatedMessages[updatedMessages.length - 1] = {
-            content: botMessage,
-            role: "assistant",
-          };
-          return updatedMessages;
-        });
+      if (accumulatedThink && accumulatedContent) {
+        const assistantMessage = {
+          role: 'assistant',
+          content: `<think>${accumulatedThink}</think>${accumulatedContent}`,
+        };
+        setMessages(prevMessages => [...prevMessages, assistantMessage]);
+      } else if (accumulatedContent) {
+        const assistantMessage = {
+          role: 'assistant',
+          content: accumulatedContent,
+        };
+        setMessages(prevMessages => [...prevMessages, assistantMessage]);
       }
     } catch (error) {
-      console.error("Error:", error);
+      console.error('Error:', error);
+      const errorMessage = {
+        role: 'assistant',
+        content: 'Error: Failed to send message.',
+      };
+      setMessages(prevMessages => [...prevMessages, errorMessage]);
     } finally {
       setLoading(false);
+      setIsThinking(false);
+      setPendingThink('');
     }
   };
 
@@ -199,119 +197,38 @@ function App() {
     console.log("🚀 ~ useEffect ~ messages:", messages)
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
-
+  const handleClearConversation = () => {
+    setMessages([]);
+    setIsThinking(false);
+    setPendingThink('');
+    setUploadedFile(null);
+  };
   return (
-    <div className="chat-container">
-      <div className="chat-header">
-        <h2>DeepSeek AI Assistant</h2>
-        <p className="subtitle">Powered by Ollama + Deepseek R1</p>
-      </div>
-      
-      <div className="messages-container">
-
-            {messages.map((message, index) => (
-              <div key={index} className={`message-wrapper ${message.role}`}>
-                <div className="avatar">
-                  {message.role === "user" ? "👤" : "🤖"}
-                </div>
-                <div className="message-bubble">
-                  {message.role === "assistant" && (
-                    <>
-                      {(() => {
-                        const { think, rest } = extractThinkContent(message.content);
-                        return think ? (
-                          <>
-                            <button 
-                              className={`toggle-think ${!collapsedThinks[index] ? 'expanded' : ''}`}
-                              onClick={() => toggleThink(index)}
-                            >
-                              <svg viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/>
-                              </svg>
-                              思考过程
-                            </button>
-                            <div className={`message-think ${collapsedThinks[index] ? 'collapsed' : ''}`}>
-                              {think}
-                            </div>
-                          </>
-                        ) : null;
-                      })()}
-                      <div
-                        className="message-content"
-                        dangerouslySetInnerHTML={{ 
-                          __html: parseMessageText(
-                            extractThinkContent(message.content).rest
-                          ) 
-                        }}
-                      />
-                    </>
-                  )}
-                  {message.role === "user" && (
-                    <div
-                      className="message-content"
-                      dangerouslySetInnerHTML={{ __html: parseMessageText(message.content) }}
-                    />
-                  )}
-                </div>
-              </div>
-            ))}
-        {(loading || isThinking) && (
-          <div className="message-wrapper bot">
-            <div className="avatar">🤖</div>
-            <div className="message-bubble">
-              {isThinking && pendingThink ? (
-                <div className="thinking-content">
-                  <div className="thinking-indicator">思考中...</div>
-                  <div className="thinking-text">{pendingThink}</div>
-                </div>
-              ) : (
-                <div className="typing-indicator">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      <div className="input-container">
-        <div className="file-upload-container">
-          <label htmlFor="file-upload" className="file-input-label">
-            <span>📎 上传文件</span>
-          </label>
-          <input
-            id="file-upload"
-            type="file"
-            accept=".txt,.json"
-            onChange={handleFileUpload}
-            ref={fileInputRef}
-            className="file-input"
-          />
-          {uploadedFile && (
-            <div className="uploaded-file">
-              <span>📄 {uploadedFile.name}</span>
-              <button onClick={removeFile} className="remove-file-btn" title="删除文件">×</button>
-            </div>
-          )}
+    <div className="app">
+      <div className="chat-container">
+        <div className="header">
+          <h1>DeepSeek Chat</h1>
+          <ClearButton onClear={handleClearConversation} />
         </div>
-        <input
-          type="text"
-          className="message-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
-          placeholder="输入消息..."
+        
+        <ChatMessages
+          messages={messages}
+          loading={loading} 
+          isThinking={isThinking}
+          pendingThink={pendingThink}
         />
-        <button 
-          onClick={sendMessage} 
-          className="send-button"
-          disabled={loading || !input.trim()}
-        >
-          发送
-        </button>
+        
+        <div className="input-area">
+          <FileUpload 
+            onFileUpload={handleFileUpload}
+            uploadedFile={uploadedFile}
+            onRemoveFile={() => setUploadedFile(null)}
+          />
+          <MessageInput 
+            onSendMessage={handleSendMessage} 
+            disabled={loading}
+          />
+        </div>
       </div>
     </div>
   );
