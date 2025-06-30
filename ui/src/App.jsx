@@ -2,7 +2,7 @@
  * @Author: wei-destiny 1286780926@qq.com
  * @Date: 2025-06-02 19:32:45
  * @LastEditors: wei-destiny 1286780926@qq.com
- * @LastEditTime: 2025-06-09 17:59:51
+ * @LastEditTime: 2025-06-13 22:08:11
  * @FilePath: \deepseek-web\ui\src\App.jsx
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -15,94 +15,92 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [pendingThink, setPendingThink] = useState('');
-  const [uploadedFile, setUploadedFile] = useState(null);
+  const [uploadedFiles, setUploadedFiles] = useState({ config: null, target: null });
+  const [fileContents, setFileContents] = useState({ config: '', target: '' });
   const [collapsedThinks, setCollapsedThinks] = useState({});
+  const [sessionId, setSessionId] = useState(null);
+  const [downloadUrl, setDownloadUrl] = useState(null);
   const messagesEndRef = useRef(null);
-  const fileInputRef = useRef(null);
 
-  const handleFileUpload = async (file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    setUploadedFile(file);
+  // 加载聊天历史
+  useEffect(() => {
+    const savedSessionId = localStorage.getItem('chatSessionId');
+    if (savedSessionId) {
+      setSessionId(savedSessionId);
+      fetchChatHistory(savedSessionId);
+    }
+  }, []);
 
+  const fetchChatHistory = async (sid) => {
     try {
-      const response = await fetch('http://localhost:3000/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      const response = await fetch(`http://localhost:3000/chat/history/${sid}`);
+      if (response.ok) {
+        const data = await response.json();
+        setMessages(data.history);
       }
+    } catch (error) {
+      console.error('获取聊天历史失败:', error);
+    }
+  };
 
-      const data = await response.json();
+  const handleFileUpload = (file, content, fileType) => {
+    try {
+      setUploadedFiles(prev => ({ ...prev, [fileType]: file }));
+      setFileContents(prev => ({ ...prev, [fileType]: content }));
       
-      // Add system message about successful upload
+      // 添加系统消息
       const systemMessage = {
         role: 'assistant',
-        content: `File uploaded successfully: ${file.name}`,
+        content: `${fileType === 'config' ? '配置文件' : '目标文档'} "${file.name}" 已上传成功。`,
       };
       setMessages(prevMessages => [...prevMessages, systemMessage]);
     } catch (error) {
-      console.error('Error:', error);
+      console.error('文件上传处理失败:', error);
+      // 重置该文件类型的状态
+      setUploadedFiles(prev => ({ ...prev, [fileType]: null }));
+      setFileContents(prev => ({ ...prev, [fileType]: '' }));
+      
+      // 添加错误消息
       const errorMessage = {
         role: 'assistant',
-        content: `Error: Failed to upload file ${file.name}`,
+        content: `文件 "${file.name}" 上传失败，请重试。`,
       };
       setMessages(prevMessages => [...prevMessages, errorMessage]);
-      setUploadedFile(null);
     }
   };
 
-  const removeFile = () => {
-    setUploadedFile(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  };
-
-  const handleFileSelect = (event) => {
-    setSelectedFile(event.target.files[0]);
-    setUploadStatus('');
-  };
-
-  const handleUpload = async () => {
-    if (!selectedFile) {
-      setUploadStatus('请选择文件');
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
-    try {
-      setUploadStatus('上传中...');
-      const response = await fetch('http://localhost:3000/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setUploadStatus('文件上传成功：' + data.filename);
-        setSelectedFile(null);
-      } else {
-        setUploadStatus('上传失败：' + await response.text());
-      }
-    } catch (error) {
-      setUploadStatus('上传错误：' + error.message);
-    }
+  const handleRemoveFile = (fileType) => {
+    setUploadedFiles(prev => ({ ...prev, [fileType]: null }));
+    setFileContents(prev => ({ ...prev, [fileType]: '' }));
+    
+    // 添加系统消息
+    const systemMessage = {
+      role: 'assistant',
+      content: `${fileType === 'config' ? '配置文件' : '目标文档'} 已移除。`,
+    };
+    setMessages(prevMessages => [...prevMessages, systemMessage]);
   };
 
   const handleSendMessage = async (content) => {
     if (!content.trim()) return;
 
-    // Add user message
+    // 检查是否已上传两个文件
+    if (!uploadedFiles.config || !uploadedFiles.target) {
+      const errorMessage = {
+        role: 'assistant',
+        content: '请先上传配置文件和目标文档。',
+      };
+      setMessages(prevMessages => [...prevMessages, errorMessage]);
+      return;
+    }
+
+    // 添加用户消息
     const userMessage = { role: 'user', content };
     setMessages(prevMessages => [...prevMessages, userMessage]);
 
-    // Set loading state
+    // 设置加载状态
     setLoading(true);
+    setDownloadUrl(null); // 重置下载链接
 
     try {
       const response = await fetch('http://localhost:3000/chat', {
@@ -110,105 +108,119 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ message: content }),
+        body: JSON.stringify({
+          message: content,
+          configContent: fileContents.config,
+          targetContent: fileContents.target,
+          configFileName: uploadedFiles.config.name,
+          targetFileName: uploadedFiles.target.name,
+          saveResponse: true,
+          sessionId: sessionId
+        }),
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.text();
+        throw new Error(`服务器错误: ${errorData}`);
+      }
+
+      // 获取或更新会话ID
+      const newSessionId = response.headers.get('X-Session-ID');
+      if (newSessionId && newSessionId !== sessionId) {
+        setSessionId(newSessionId);
+        localStorage.setItem('chatSessionId', newSessionId);
       }
 
       const reader = response.body.getReader();
-      let accumulatedThink = '';
       let accumulatedContent = '';
+      let downloadLink = null;
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         
-        // Convert the array buffer to text
         const text = new TextDecoder().decode(value);
-        const lines = text.split('\n');
+        accumulatedContent += text;
         
-        for (const line of lines) {
-          if (!line) continue;
-          
-          try {
-            const data = JSON.parse(line);
-            
-            if (data.type === 'think') {
-              setIsThinking(true);
-              accumulatedThink += data.content;
-              setPendingThink(accumulatedThink);
-            } else if (data.type === 'content') {
-              setIsThinking(false);
-              setPendingThink('');
-              accumulatedContent += data.content;
-            }
-          } catch (e) {
-            console.error('Error parsing JSON:', e);
-          }
+        // 检查是否包含下载链接
+        const downloadMatch = text.match(/下载链接: (\/api\/download\/[^\n]+)/);
+        if (downloadMatch) {
+          downloadLink = `http://localhost:3000${downloadMatch[1]}`;
+          setDownloadUrl(downloadLink);
         }
-      }
-
-      if (accumulatedThink && accumulatedContent) {
-        const assistantMessage = {
-          role: 'assistant',
-          content: `<think>${accumulatedThink}</think>${accumulatedContent}`,
-        };
-        setMessages(prevMessages => [...prevMessages, assistantMessage]);
-      } else if (accumulatedContent) {
+        
+        // 更新消息显示
         const assistantMessage = {
           role: 'assistant',
           content: accumulatedContent,
         };
-        setMessages(prevMessages => [...prevMessages, assistantMessage]);
+        setMessages(prevMessages => {
+          const newMessages = [...prevMessages];
+          const lastMessage = newMessages[newMessages.length - 1];
+          if (lastMessage && lastMessage.role === 'assistant') {
+            newMessages[newMessages.length - 1] = assistantMessage;
+          } else {
+            newMessages.push(assistantMessage);
+          }
+          return newMessages;
+        });
       }
     } catch (error) {
       console.error('Error:', error);
       const errorMessage = {
         role: 'assistant',
-        content: 'Error: Failed to send message.',
+        content: `错误: ${error.message}`,
       };
       setMessages(prevMessages => [...prevMessages, errorMessage]);
     } finally {
       setLoading(false);
-      setIsThinking(false);
-      setPendingThink('');
     }
   };
 
-  const toggleThink = (messageId) => {
-    setCollapsedThinks(prev => ({
-      ...prev,
-      [messageId]: !prev[messageId]
-    }));
+  const handleDownload = () => {
+    if (downloadUrl) {
+      window.open(downloadUrl, '_blank');
+    }
   };
 
-  const extractThinkContent = (content) => {
-    const thinkMatch = content.match(/<think>(.*?)<\/think>/s);
-    if (!thinkMatch) return { think: null, rest: content };
-    
-    const think = thinkMatch[1].trim();
-    const rest = content.replace(thinkMatch[0], '').trim();
-    return { think, rest };
-  };
-
-  useEffect(() => {
-    console.log("🚀 ~ useEffect ~ messages:", messages)
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-  const handleClearConversation = () => {
+  const handleClearConversation = async () => {
+    if (sessionId) {
+      try {
+        await fetch(`http://localhost:3000/chat/clear/${sessionId}`, {
+          method: 'POST'
+        });
+      } catch (error) {
+        console.error('清除聊天历史失败:', error);
+      }
+    }
     setMessages([]);
     setIsThinking(false);
     setPendingThink('');
-    setUploadedFile(null);
+    setUploadedFiles({ config: null, target: null });
+    setFileContents({ config: '', target: '' });
   };
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   return (
     <div className="app">
       <div className="chat-container">
         <div className="header">
           <h1>DeepSeek Chat</h1>
-          <ClearButton onClear={handleClearConversation} />
+          <div className="header-buttons">
+            {downloadUrl && (
+              <button 
+                className="download-button"
+                onClick={handleDownload}
+                title="下载修改后的文档"
+              >
+                下载文档
+              </button>
+            )}
+            <ClearButton onClear={handleClearConversation} />
+          </div>
         </div>
         
         <ChatMessages
@@ -216,13 +228,14 @@ function App() {
           loading={loading} 
           isThinking={isThinking}
           pendingThink={pendingThink}
+          messagesEndRef={messagesEndRef}
         />
         
         <div className="input-area">
           <FileUpload 
             onFileUpload={handleFileUpload}
-            uploadedFile={uploadedFile}
-            onRemoveFile={() => setUploadedFile(null)}
+            uploadedFiles={uploadedFiles}
+            onRemoveFile={handleRemoveFile}
           />
           <MessageInput 
             onSendMessage={handleSendMessage} 
